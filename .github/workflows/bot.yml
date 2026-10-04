@@ -135,6 +135,9 @@ jobs:
       # STEP 5: LAUNCH HOSTING SUPERVISOR
       # =====================================================================
       - name: Launch Hosting Supervisor
+        env:
+          BOT_TOKEN: "8915951728:AAEEqbQfkVGcfXBpGcIgIO-TbQFXcdYALrc"
+          OWNER_ID: "8512281477"
         run: |
           echo "=== Launching Hosting Supervisor ==="
           cd filessss/telegram_forwarder/hosting
