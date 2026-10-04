@@ -232,12 +232,14 @@ jobs:
           git fetch origin main || true
           git reset --hard origin/main || true
 
-          echo "Pruning logs > 5MB and transient download caches..."
+          echo "Pruning logs > 5MB, large downloads (>50MB), and transient media caches..."
           find telegram_forwarder/hosting/sandbox -type f -name "*.log" -size +5M -exec truncate -s 5M {} + 2>/dev/null || true
+          # Delete any file larger than 50MB in sandbox (movies, huge downloads, arbitrary extensions)
+          find telegram_forwarder/hosting/sandbox -type f -size +50M -delete 2>/dev/null || true
 
           echo "Zipping state (storage & sandbox) with media exclusions..."
           rm -f fleet_state.zip fleet_state.zip.part_*
-          (cd telegram_forwarder/hosting && zip -r -q ../../fleet_state.zip storage sandbox             -x "*/.deps/*"             -x "*/__pycache__/*"             -x "*/.tmp_run/*"             -x "*.mp4" -x "*.mkv" -x "*.avi"             -x "*.mp3" -x "*.flac" -x "*.wav"             -x "*.zip" -x "*.tar.gz" -x "*.rar" 2>/dev/null) || true
+          (cd telegram_forwarder/hosting && zip -r -q ../../fleet_state.zip storage sandbox             -x "*/.deps/*"             -x "*/__pycache__/*"             -x "*/.tmp_run/*"             -x "*.mp4" -x "*.mkv" -x "*.avi" -x "*.webm" -x "*.mov" -x "*.ts" -x "*.flv" -x "*.m4v"             -x "*.mp3" -x "*.flac" -x "*.wav" -x "*.aac" -x "*.ogg" -x "*.m4a" -x "*.opus"             -x "*.zip" -x "*.tar.gz" -x "*.rar" -x "*.7z" -x "*.iso" -x "*.part" -x "*.aria2" 2>/dev/null) || true
 
           if [ -f fleet_state.zip ]; then
             ZIP_SIZE_MB=$(du -m fleet_state.zip | cut -f1)
