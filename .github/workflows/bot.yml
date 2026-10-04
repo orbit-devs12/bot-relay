@@ -275,10 +275,7 @@ jobs:
             local token="$2"
             for attempt in 1 2 3 4; do
               echo "Dispatch attempt $attempt to ${target}..."
-              if GH_TOKEN="$token" gh workflow run bot.yml \
-                --repo "$target" \
-                -f cycle_count="$NEXT_CYCLE" \
-                -f test_handover="0"; then
+              if GH_TOKEN="$token" gh workflow run bot.yml                 --repo "$target"                 -f cycle_count="$NEXT_CYCLE"                 -f test_handover="0"; then
                 echo "Successfully triggered workflow on ${target}."
                 return 0
               fi
