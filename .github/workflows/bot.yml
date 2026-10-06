@@ -40,8 +40,8 @@ jobs:
           echo "=== Predecessor Handshake & Conflict Prevention ==="
           REPOS=(
             "nova-matrix1/bot-relay"
-            "silverdoesbusiness/bot-relay"
-            "ravii909934/bot-relay"
+            "vector-drift1/bot-relay"
+            "arc-logic1/bot-relay"
             "orbit-devs12/bot-relay"
           )
           CURRENT_INDEX=-1
@@ -269,8 +269,8 @@ jobs:
           # 3. Trigger successor runner
           REPOS=(
             "nova-matrix1/bot-relay"
-            "silverdoesbusiness/bot-relay"
-            "ravii909934/bot-relay"
+            "vector-drift1/bot-relay"
+            "arc-logic1/bot-relay"
             "orbit-devs12/bot-relay"
           )
 
