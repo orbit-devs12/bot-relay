@@ -373,21 +373,7 @@ jobs:
           # 6. Validate database JSON syntax and reject empty DB (P0-1)
           echo "Validating database JSON integrity before zipping..."
           if [ -f "$DB_FILE" ]; then
-            python3 - <<'EOF' || { echo "::error::DB invalid or empty — refusing to overwrite remote state!"; exit 1; }
-import json, sys
-try:
-    with open('telegram_forwarder/hosting/storage/data/panel_db.json', 'r', encoding='utf-8') as f:
-        db = json.load(f)
-    assert isinstance(db, dict) and "users" in db and "bots" in db, "Missing users/bots schema"
-    assert db.get("users") or db.get("bots"), "Database is completely empty (refusing to wipe remote data)"
-    with open('telegram_forwarder/hosting/storage/data/panel_settings.json', 'r', encoding='utf-8') as f:
-        settings = json.load(f)
-    assert isinstance(settings, dict), "Invalid settings schema"
-    print("Database integrity check passed.")
-except Exception as e:
-    print(f"Validation failed: {e}", file=sys.stderr)
-    sys.exit(1)
-EOF
+            python3 -c "import json, sys; db = json.load(open('telegram_forwarder/hosting/storage/data/panel_db.json')); settings = json.load(open('telegram_forwarder/hosting/storage/data/panel_settings.json')); assert isinstance(db, dict) and 'users' in db and 'bots' in db and (db.get('users') or db.get('bots')), 'DB empty or invalid schema'; print('Database integrity check passed.')" || { echo "::error::DB invalid or empty — refusing to overwrite remote state!"; exit 1; }
           fi
 
           # 7. Package state archive
