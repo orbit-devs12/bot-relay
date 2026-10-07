@@ -103,10 +103,10 @@ jobs:
               if [ "$AGE_MIN" -ge 300 ]; then
                 echo "Predecessor is in active handover window (>=300m). DO NOT CANCEL."
                 echo "Waiting up to 12m for state bundle commit to land in Silver-kun/Filessss..."
-                BEFORE=$(git -c http.extraHeader="AUTHORIZATION: bearer ${CLONE_PAT}" ls-remote "https://github.com/Silver-kun/Filessss.git" HEAD 2>/dev/null | awk '{print $1}' || echo "")
+                BEFORE=$(git ls-remote "https://${CLONE_PAT}@github.com/Silver-kun/Filessss.git" HEAD 2>/dev/null | awk '{print $1}' || echo "")
                 for w in $(seq 1 12); do
                   sleep 60
-                  AFTER=$(git -c http.extraHeader="AUTHORIZATION: bearer ${CLONE_PAT}" ls-remote "https://github.com/Silver-kun/Filessss.git" HEAD 2>/dev/null | awk '{print $1}' || echo "")
+                  AFTER=$(git ls-remote "https://${CLONE_PAT}@github.com/Silver-kun/Filessss.git" HEAD 2>/dev/null | awk '{print $1}' || echo "")
                   echo "Handover check ${w}/12m | Pre-commit: ${BEFORE:0:8} | Current: ${AFTER:0:8}"
                   if [ -n "$AFTER" ] && [ "$AFTER" != "$BEFORE" ]; then
                     echo "Fresh state commit detected on Filessss! Proceeding to state restore."
@@ -140,7 +140,7 @@ jobs:
           fi
 
       # =====================================================================
-      # STEP 2: CLONE PRIVATE FILESSSS REPO (P2-1)
+      # STEP 2: CLONE PRIVATE FILESSSS REPO
       # =====================================================================
       - name: Clone Private Filessss Repository
         env:
@@ -149,7 +149,7 @@ jobs:
           echo "=== Cloning Central Repository ==="
           git config --global user.name "Silver-kun"
           git config --global user.email "silver-kun@users.noreply.github.com"
-          git -c http.extraHeader="AUTHORIZATION: bearer ${CLONE_PAT}" clone "https://github.com/Silver-kun/Filessss.git" filessss
+          git clone "https://${CLONE_PAT}@github.com/Silver-kun/Filessss.git" filessss
           echo "Cloned Filessss successfully."
 
       # =====================================================================
@@ -401,7 +401,7 @@ jobs:
             if ! git diff --cached --quiet; then
               echo "Pushing updated fleet state to Silver-kun/Filessss..."
               git commit -m "Auto-refresh: update fleet state bundle (Cycle #${CYCLE_COUNT}) [skip ci]" || true
-              git -c http.extraHeader="AUTHORIZATION: bearer ${CLONE_PAT}" push origin HEAD:main 2>/dev/null || true
+              git push "https://${CLONE_PAT}@github.com/Silver-kun/Filessss.git" HEAD:main 2>/dev/null || true
             else
               echo "No state changes detected in fleet state."
             fi
