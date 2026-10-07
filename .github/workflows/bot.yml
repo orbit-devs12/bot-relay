@@ -18,7 +18,7 @@ jobs:
   bot-relay:
     name: Run Python Telegram Forwarder & Hosting Supervisor
     runs-on: ubuntu-latest
-    timeout-minutes: 360
+    timeout-minutes: 380
 
     steps:
       - name: Checkout Current Repository
@@ -30,14 +30,42 @@ jobs:
           python-version: '3.11'
 
       # =====================================================================
-      # STEP 1: PREDECESSOR HANDSHAKE & CONFLICT PREVENTION
+      # STEP 0: PRE-FLIGHT SECRET GATE & TOOL ASSERTIONS (P0-3, P1-7, P2-6)
+      # =====================================================================
+      - name: Validate Required Secrets & Tools
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          CLONE_PAT: ${{ secrets.CLONE_PAT }}
+          PREV_PAT: ${{ secrets.PREV_PAT }}
+          NEXT_PAT: ${{ secrets.NEXT_PAT }}
+          FALLBACK_PAT: ${{ secrets.FALLBACK_PAT }}
+        run: |
+          echo "=== Pre-Flight Secrets & Tools Validation ==="
+          gh --version || { echo "::error::gh CLI is not installed!"; exit 1; }
+          missing=0
+          for v in BOT_TOKEN CLONE_PAT PREV_PAT NEXT_PAT FALLBACK_PAT; do
+            if [ -z "${!v:-}" ]; then
+              echo "::error::Required secret '${v}' is missing or empty!"
+              missing=1
+            fi
+          done
+          if [ $missing -ne 0 ]; then
+            echo "Critical: Aborting launch due to missing secrets."
+            exit 1
+          fi
+          echo "All required secrets and tools successfully validated."
+
+      # =====================================================================
+      # STEP 1: PREDECESSOR HANDSHAKE & CONFLICT PREVENTION (P0-2, P1-2, P1-6, P2-1)
       # =====================================================================
       - name: Predecessor Handshake & Conflict Prevention
         env:
           PREV_PAT: ${{ secrets.PREV_PAT }}
+          CLONE_PAT: ${{ secrets.CLONE_PAT }}
           CYCLE_COUNT: ${{ github.event.inputs.cycle_count }}
         run: |
           echo "=== Predecessor Handshake & Conflict Prevention ==="
+          set -uo pipefail
           REPOS=(
             "nova-matrix1/bot-relay"
             "vector-drift1/bot-relay"
@@ -61,25 +89,58 @@ jobs:
 
             if [ -n "$PREV_RUN_ID" ] && [ "$PREV_RUN_ID" != "null" ]; then
               echo "Active predecessor run detected: #${PREV_RUN_ID} on ${PREV_REPO}"
-              echo "Gracefully cancelling predecessor to release Telegram sessions..."
-              GH_TOKEN="$PREV_PAT" gh run cancel "$PREV_RUN_ID" --repo "$PREV_REPO" 2>/dev/null || true
-
-              for sec in {1..20}; do
-                RUN_STATUS=$(GH_TOKEN="$PREV_PAT" gh run view "$PREV_RUN_ID" --repo "$PREV_REPO" --json status -q '.status' 2>/dev/null || echo "")
-                if [ "$RUN_STATUS" != "in_progress" ]; then
-                  echo "Predecessor terminated cleanly in ${sec}s."
-                  break
+              CREATED=$(GH_TOKEN="$PREV_PAT" gh run view "$PREV_RUN_ID" --repo "$PREV_REPO" --json createdAt -q '.createdAt' 2>/dev/null || echo "")
+              AGE_MIN=999
+              if [ -n "$CREATED" ]; then
+                CREATED_EPOCH=$(date -d "$CREATED" +%s 2>/dev/null || echo 0)
+                NOW_EPOCH=$(date +%s)
+                if [ "$CREATED_EPOCH" -gt 0 ]; then
+                  AGE_MIN=$(( (NOW_EPOCH - CREATED_EPOCH) / 60 ))
                 fi
-                sleep 2
-              done
-              sleep 3
+              fi
+              echo "Predecessor runtime age: ${AGE_MIN}m"
+
+              if [ "$AGE_MIN" -ge 300 ]; then
+                echo "Predecessor is in active handover window (>=300m). DO NOT CANCEL."
+                echo "Waiting up to 12m for state bundle commit to land in Silver-kun/Filessss..."
+                BEFORE=$(git -c http.extraHeader="AUTHORIZATION: bearer ${CLONE_PAT}" ls-remote "https://github.com/Silver-kun/Filessss.git" HEAD 2>/dev/null | awk '{print $1}' || echo "")
+                for w in $(seq 1 12); do
+                  sleep 60
+                  AFTER=$(git -c http.extraHeader="AUTHORIZATION: bearer ${CLONE_PAT}" ls-remote "https://github.com/Silver-kun/Filessss.git" HEAD 2>/dev/null | awk '{print $1}' || echo "")
+                  echo "Handover check ${w}/12m | Pre-commit: ${BEFORE:0:8} | Current: ${AFTER:0:8}"
+                  if [ -n "$AFTER" ] && [ "$AFTER" != "$BEFORE" ]; then
+                    echo "Fresh state commit detected on Filessss! Proceeding to state restore."
+                    break
+                  fi
+                  STATUS=$(GH_TOKEN="$PREV_PAT" gh run view "$PREV_RUN_ID" --repo "$PREV_REPO" --json status -q '.status' 2>/dev/null || echo "")
+                  if [ "$STATUS" != "in_progress" ] && [ "$STATUS" != "queued" ]; then
+                    echo "Predecessor finished cleanly (status=${STATUS})."
+                    break
+                  fi
+                done
+                sleep 10
+              else
+                echo "Predecessor age < 300m (overlapping/stale run). Cancelling predecessor..."
+                GH_TOKEN="$PREV_PAT" gh run cancel "$PREV_RUN_ID" --repo "$PREV_REPO" 2>/dev/null || true
+                for sec in {1..30}; do
+                  RUN_STATUS=$(GH_TOKEN="$PREV_PAT" gh run view "$PREV_RUN_ID" --repo "$PREV_REPO" --json status -q '.status' 2>/dev/null || echo "")
+                  if [ "$RUN_STATUS" != "in_progress" ]; then
+                    echo "Predecessor terminated cleanly in ${sec}s."
+                    break
+                  fi
+                  sleep 2
+                done
+                sleep 15
+              fi
             else
               echo "No active predecessor run detected on ${PREV_REPO}. Safe to proceed."
             fi
+          else
+            echo "::warning::CURRENT_INDEX could not be resolved for ${GITHUB_REPOSITORY}. Skipping predecessor handshake."
           fi
 
       # =====================================================================
-      # STEP 2: CLONE PRIVATE FILESSSS REPO
+      # STEP 2: CLONE PRIVATE FILESSSS REPO (P2-1)
       # =====================================================================
       - name: Clone Private Filessss Repository
         env:
@@ -88,11 +149,11 @@ jobs:
           echo "=== Cloning Central Repository ==="
           git config --global user.name "Silver-kun"
           git config --global user.email "silver-kun@users.noreply.github.com"
-          git clone "https://${CLONE_PAT}@github.com/Silver-kun/Filessss.git" filessss
+          git -c http.extraHeader="AUTHORIZATION: bearer ${CLONE_PAT}" clone "https://github.com/Silver-kun/Filessss.git" filessss
           echo "Cloned Filessss successfully."
 
       # =====================================================================
-      # STEP 3: INSTALL DEPENDENCIES & SDks
+      # STEP 3: INSTALL DEPENDENCIES & SDKs
       # =====================================================================
       - name: Install Dependencies & SDKs
         run: |
@@ -102,33 +163,41 @@ jobs:
           python -m pip install --upgrade pip
           pip install pyTelegramBotAPI requests cryptography flask APScheduler PyGithub psutil Pillow curl_cffi telethon pyrogram tgcrypto aiohttp
 
-          # Install extra dependencies from hosting requirements if needed
           if [ -f filessss/telegram_forwarder/hosting/requirements.txt ]; then
             pip install -r filessss/telegram_forwarder/hosting/requirements.txt
           fi
 
       # =====================================================================
-      # STEP 4: RESTORE FLEET PERSISTENCE STATE (STORAGE & SANDBOX)
+      # STEP 4: RESTORE FLEET PERSISTENCE STATE (STORAGE & SANDBOX) (P0-5, P1-8)
       # =====================================================================
       - name: Restore Fleet State
         run: |
           echo "=== Restoring Fleet State (Bots, DBs, Sessions) ==="
           HOSTING_DIR="filessss/telegram_forwarder/hosting"
+          rm -rf "$HOSTING_DIR/storage" "$HOSTING_DIR/sandbox"
           mkdir -p "$HOSTING_DIR/storage" "$HOSTING_DIR/sandbox"
 
-          # 1. Clean any stale unzipped target in clone directory
-          rm -f filessss/fleet_state.zip
-
-          # 2. Check and reassemble split chunks deterministically
-          PARTS=$(find filessss -maxdepth 1 -name "fleet_state.zip.part_*" | sort)
-          if [ -n "$PARTS" ]; then
-            echo "Found split state chunks:"
-            echo "$PARTS"
-            echo "Recombining in strict sorted order..."
-            cat $PARTS > filessss/fleet_state.zip
+          # 1. Deterministic Recombination of split chunks via verified temp swap (P1-4)
+          rm -f filessss/_recombined.zip
+          mapfile -d '' PARTS < <(find filessss -maxdepth 1 -name "fleet_state.zip.part_*" -print0 2>/dev/null | sort -z)
+          if [ ${#PARTS[@]} -gt 0 ]; then
+            echo "Found ${#PARTS[@]} split state chunks. Recombining to temporary buffer..."
+            cat "${PARTS[@]}" > filessss/_recombined.zip
+            if unzip -tq filessss/_recombined.zip; then
+              if [ -f filessss/fleet_state.sha256 ]; then
+                echo "Verifying SHA256 manifest on recombined archive..."
+                (cd filessss && sha256sum -c fleet_state.sha256) || { echo "::error::SHA256 mismatch on recombined archive!"; exit 1; }
+              fi
+              mv -f filessss/_recombined.zip filessss/fleet_state.zip
+              echo "Recombined split state passed integrity and manifest verification."
+            else
+              echo "::error::Recombined split state archive failed integrity test! Refusing stale fallback."
+              rm -f filessss/_recombined.zip
+              exit 1
+            fi
           fi
 
-          # 3. Test and unpack archive with error logging
+          # 2. Test and unpack archive with fail-closed integrity assertion (P1-4, P2-3)
           if [ -f filessss/fleet_state.zip ]; then
             ZIP_SIZE=$(stat -c%s filessss/fleet_state.zip 2>/dev/null || stat -f%z filessss/fleet_state.zip)
             echo "Testing archive integrity ($(( ZIP_SIZE / 1024 / 1024 )) MB)..."
@@ -136,9 +205,19 @@ jobs:
               echo "Archive test passed! Unpacking into $HOSTING_DIR..."
               unzip -q -o filessss/fleet_state.zip -d "$HOSTING_DIR"
               echo "Unpack complete."
+              if [ ! -f "$HOSTING_DIR/storage/data/panel_db.json" ]; then
+                if unzip -l filessss/fleet_state.zip | grep -q "storage/"; then
+                  echo "::error::Archive contains storage/ files but panel_db.json is missing or corrupted!"
+                  exit 1
+                else
+                  echo "::warning::panel_db.json not found in archive (fresh state baseline)."
+                fi
+              else
+                echo "Validated presence of storage/data/panel_db.json."
+              fi
             else
-              echo "ERROR: Archive integrity check failed!"
-              unzip -v filessss/fleet_state.zip || true
+              echo "::error::Archive integrity check failed! Refusing to boot with broken state."
+              exit 1
             fi
             ls -la "$HOSTING_DIR/storage" 2>/dev/null || true
             ls -la "$HOSTING_DIR/sandbox" 2>/dev/null || true
@@ -174,11 +253,9 @@ jobs:
       # =====================================================================
       # STEP 6: 330m PRODUCTION SHIFT & WATCHDOG
       # =====================================================================
-      - name: Maintenance Loop & Automated Successor Handover
+      - name: Maintenance Loop & Watchdog
+        id: shift-watchdog
         env:
-          CLONE_PAT: ${{ secrets.CLONE_PAT }}
-          NEXT_PAT: ${{ secrets.NEXT_PAT }}
-          FALLBACK_PAT: ${{ secrets.FALLBACK_PAT }}
           CYCLE_COUNT: ${{ github.event.inputs.cycle_count }}
           TEST_HANDOVER: ${{ github.event.inputs.test_handover }}
         run: |
@@ -199,9 +276,11 @@ jobs:
             sleep 60
             ELAPSED=$((ELAPSED + 1))
 
-            # Auto-restart supervisor if crashed
+            # Auto-restart supervisor if crashed, ensuring stale child processes are cleared
             if [ -n "$PANEL_PID" ] && ! kill -0 $PANEL_PID 2>/dev/null; then
-              echo "[$(date +'%T')] Supervisor died unexpectedly. Restarting..."
+              echo "[$(date +'%T')] Supervisor died unexpectedly. Cleaning stale procs and restarting..."
+              pkill -15 -f "telegram_forwarder/hosting" 2>/dev/null || true
+              sleep 2
               cd ${GITHUB_WORKSPACE}/filessss/telegram_forwarder/hosting
               python -u bot.py >> panel.log 2>&1 &
               PANEL_PID=$!
@@ -213,60 +292,150 @@ jobs:
             fi
           done
 
-          echo "==========================================================="
-          echo "  HANDOVER THRESHOLD REACHED (Minute ${HANDOVER_MINUTE})"
-          echo "  Executing Graceful Shutdown & State Backup..."
-          echo "==========================================================="
+          echo "Handover threshold reached (Minute ${HANDOVER_MINUTE}). Proceeding to quiesce and state sync."
 
-          # 1. Gracefully stop supervisor and child bots
+      # =====================================================================
+      # STEP 7: STATE SYNC & BACKUP BUNDLE CREATION (P0-1, P0-4, P0-6, P1-7)
+      # =====================================================================
+      - name: Quiesce & Push Fleet State
+        if: always()
+        env:
+          CLONE_PAT: ${{ secrets.CLONE_PAT }}
+          CYCLE_COUNT: ${{ github.event.inputs.cycle_count }}
+        run: |
+          echo "=== Quiescing Supervisor, Flushing DBs, and Packaging State ==="
+          PANEL_PID=$(cat /tmp/panel.pid 2>/dev/null || echo "")
+
+          # 1. Send SIGTERM to supervisor and wait up to 90s for clean join and child teardown
           if [ -n "$PANEL_PID" ]; then
             echo "Sending SIGTERM to Hosting Supervisor (PID $PANEL_PID)..."
             kill -15 $PANEL_PID 2>/dev/null || true
-            sleep 5
+            for i in $(seq 1 90); do
+              if ! kill -0 $PANEL_PID 2>/dev/null; then
+                echo "Hosting Supervisor exited cleanly in ${i}s."
+                break
+              fi
+              sleep 1
+            done
+            if kill -0 $PANEL_PID 2>/dev/null; then
+              echo "Supervisor alive after 90s. Issuing SIGKILL..."
+              kill -9 $PANEL_PID 2>/dev/null || true
+              sleep 2
+            fi
           fi
 
-          # 2. Sync state back to central repo
+          # 2. Terminate any orphaned descendant child bot processes
+          pkill -15 -f "telegram_forwarder/hosting" 2>/dev/null || true
+          sleep 2
+          REMAIN=$(pgrep -f "telegram_forwarder/hosting" 2>/dev/null || echo "")
+          if [ -n "$REMAIN" ]; then
+            echo "Force killing remaining child bot processes: $REMAIN"
+            pkill -9 -f "telegram_forwarder/hosting" 2>/dev/null || true
+            sleep 2
+          fi
+
+          # 3. Verify panel_db.json file stability
+          DB_FILE="${GITHUB_WORKSPACE}/filessss/telegram_forwarder/hosting/storage/data/panel_db.json"
+          if [ -f "$DB_FILE" ]; then
+            M1=$(stat -c %Y "$DB_FILE" 2>/dev/null || stat -f %m "$DB_FILE")
+            sleep 5
+            M2=$(stat -c %Y "$DB_FILE" 2>/dev/null || stat -f %m "$DB_FILE")
+            if [ "$M1" != "$M2" ]; then
+              echo "Database modification detected. Waiting 10s extra for full flush..."
+              sleep 10
+            fi
+            sync
+          fi
+
+          # 4. Snapshot live state BEFORE git reset to protect 330m of writes (P1-5)
+          echo "Snapshotting runtime state to /tmp/live_state..."
+          rm -rf /tmp/live_state && mkdir -p /tmp/live_state
+          cp -a ${GITHUB_WORKSPACE}/filessss/telegram_forwarder/hosting/storage /tmp/live_state/ || { echo "::error::Snapshot storage failed!"; exit 1; }
+          cp -a ${GITHUB_WORKSPACE}/filessss/telegram_forwarder/hosting/sandbox /tmp/live_state/ || { echo "::error::Snapshot sandbox failed!"; exit 1; }
+
           cd ${GITHUB_WORKSPACE}/filessss
           git config user.name "Silver-kun"
           git config user.email "silver-kun@users.noreply.github.com"
-          git fetch origin main || true
+          git -c http.extraHeader="AUTHORIZATION: bearer ${CLONE_PAT}" fetch origin main || true
           git reset --hard origin/main || true
 
-          echo "Pruning logs > 5MB, large downloads (>50MB), and transient media caches..."
-          find telegram_forwarder/hosting/sandbox -type f -name "*.log" -size +5M -exec truncate -s 5M {} + 2>/dev/null || true
-          # Delete any file larger than 50MB in sandbox (movies, huge downloads, arbitrary extensions)
-          find telegram_forwarder/hosting/sandbox -type f -size +50M -delete 2>/dev/null || true
+          # Restore live snapshot over clean git tree
+          rm -rf telegram_forwarder/hosting/storage telegram_forwarder/hosting/sandbox
+          cp -a /tmp/live_state/storage telegram_forwarder/hosting/storage || { echo "::error::Restore snapshot storage failed!"; exit 1; }
+          cp -a /tmp/live_state/sandbox telegram_forwarder/hosting/sandbox || { echo "::error::Restore snapshot sandbox failed!"; exit 1; }
 
-          echo "Zipping state (storage & sandbox) with media exclusions..."
-          rm -f fleet_state.zip fleet_state.zip.part_*
-          (cd telegram_forwarder/hosting && zip -r -q ../../fleet_state.zip storage sandbox             -x "*/.deps/*"             -x "*/__pycache__/*"             -x "*/.tmp_run/*"             -x "*.mp4" -x "*.mkv" -x "*.avi" -x "*.webm" -x "*.mov" -x "*.ts" -x "*.flv" -x "*.m4v"             -x "*.mp3" -x "*.flac" -x "*.wav" -x "*.aac" -x "*.ogg" -x "*.m4a" -x "*.opus"             -x "*.zip" -x "*.tar.gz" -x "*.rar" -x "*.7z" -x "*.iso" -x "*.part" -x "*.aria2" 2>/dev/null) || true
+          # 5. Prune ONLY regenerable caches (never delete user media or sessions)
+          echo "Pruning regenerable runtime caches..."
+          rm -rf telegram_forwarder/hosting/sandbox/*/.tmp_run 2>/dev/null || true
+          find telegram_forwarder/hosting/sandbox -type d -name "__pycache__" -prune -exec rm -rf {} + 2>/dev/null || true
+          find telegram_forwarder/hosting/sandbox -type d -name ".deps" -prune -exec rm -rf {} + 2>/dev/null || true
+
+          # 6. Validate database JSON syntax and reject empty DB (P0-1)
+          echo "Validating database JSON integrity before zipping..."
+          if [ -f "$DB_FILE" ]; then
+            python3 - <<'EOF' || { echo "::error::DB invalid or empty — refusing to overwrite remote state!"; exit 1; }
+import json, sys
+try:
+    with open('telegram_forwarder/hosting/storage/data/panel_db.json', 'r', encoding='utf-8') as f:
+        db = json.load(f)
+    assert isinstance(db, dict) and "users" in db and "bots" in db, "Missing users/bots schema"
+    assert db.get("users") or db.get("bots"), "Database is completely empty (refusing to wipe remote data)"
+    with open('telegram_forwarder/hosting/storage/data/panel_settings.json', 'r', encoding='utf-8') as f:
+        settings = json.load(f)
+    assert isinstance(settings, dict), "Invalid settings schema"
+    print("Database integrity check passed.")
+except Exception as e:
+    print(f"Validation failed: {e}", file=sys.stderr)
+    sys.exit(1)
+EOF
+          fi
+
+          # 7. Package state archive
+          echo "Zipping state (storage & sandbox)..."
+          rm -f fleet_state.zip fleet_state.zip.part_* fleet_state.sha256
+          (cd telegram_forwarder/hosting && zip -r -q ../../fleet_state.zip storage sandbox             -x "*/.deps/*"             -x "*/__pycache__/*"             -x "*/.tmp_run/*"             -x "*/node_modules/*"             -x "*/venv/*" -x "*/.venv/*" -x "*/.git/*" 2>/dev/null) || { echo "::error::Zip failed!"; exit 1; }
 
           if [ -f fleet_state.zip ]; then
+            unzip -tq fleet_state.zip || { echo "::error::Freshly created fleet_state.zip failed integrity test!"; exit 1; }
+            sha256sum fleet_state.zip > fleet_state.sha256
             ZIP_SIZE_MB=$(du -m fleet_state.zip | cut -f1)
-            echo "State archive created: ${ZIP_SIZE_MB}MB"
+            echo "State archive successfully created: ${ZIP_SIZE_MB}MB"
 
-            # Clean old chunks from git tracking
             git rm -f fleet_state.zip fleet_state.zip.part_* 2>/dev/null || true
 
             if [ "$ZIP_SIZE_MB" -ge 80 ]; then
               echo "Archive size >= 80MB. Splitting into 45MB numbered chunks..."
               split -b 45m -d -a 3 fleet_state.zip fleet_state.zip.part_
               rm -f fleet_state.zip
-              git add fleet_state.zip.part_*
+              git add fleet_state.zip.part_* fleet_state.sha256
             else
-              git add fleet_state.zip
+              git add fleet_state.zip fleet_state.sha256
             fi
 
             if ! git diff --cached --quiet; then
               echo "Pushing updated fleet state to Silver-kun/Filessss..."
               git commit -m "Auto-refresh: update fleet state bundle (Cycle #${CYCLE_COUNT}) [skip ci]" || true
-              git push "https://${CLONE_PAT}@github.com/Silver-kun/Filessss.git" HEAD:main 2>/dev/null || true
+              git -c http.extraHeader="AUTHORIZATION: bearer ${CLONE_PAT}" push origin HEAD:main 2>/dev/null || true
             else
               echo "No state changes detected in fleet state."
             fi
+            echo "BACKUP_OK=1" >> $GITHUB_ENV
           fi
 
-          # 3. Trigger successor runner
+      # =====================================================================
+      # STEP 8: AUTOMATED SUCCESSOR DISPATCH (P1-3, P1-7)
+      # =====================================================================
+      - name: Dispatch Successor Node
+        if: always()
+        env:
+          NEXT_PAT: ${{ secrets.NEXT_PAT }}
+          FALLBACK_PAT: ${{ secrets.FALLBACK_PAT }}
+          CYCLE_COUNT: ${{ github.event.inputs.cycle_count }}
+        run: |
+          echo "=== Dispatching Next Relay Node ==="
+          if [ "${BACKUP_OK:-0}" != "1" ]; then
+            echo "::warning::State backup step did NOT report success. Dispatching with caution..."
+          fi
           REPOS=(
             "nova-matrix1/bot-relay"
             "vector-drift1/bot-relay"
@@ -315,7 +484,7 @@ jobs:
           done
 
       # =====================================================================
-      # STEP 7: FINAL CLEANUP
+      # STEP 9: FINAL CLEANUP
       # =====================================================================
       - name: Final Teardown Safety Cleanup
         if: always()
@@ -325,4 +494,5 @@ jobs:
           if [ -n "$PID" ]; then
             kill -15 $PID 2>/dev/null || true
           fi
+          pkill -9 -f "telegram_forwarder/hosting" 2>/dev/null || true
           echo "Clean shutdown complete."
