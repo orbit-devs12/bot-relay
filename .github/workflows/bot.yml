@@ -385,11 +385,11 @@ jobs:
           cd ${GITHUB_WORKSPACE}/filessss
           git config user.name "Silver-kun"
           git config user.email "silver-kun@users.noreply.github.com"
-          git -c http.extraHeader="AUTHORIZATION: bearer ${CLONE_PAT}" fetch origin main || true
+          git fetch "https://${CLONE_PAT}@github.com/Silver-kun/Filessss.git" main || true
           git reset --hard origin/main || true
 
-          # Restore live snapshot over clean git tree
-          rm -rf telegram_forwarder/hosting/storage telegram_forwarder/hosting/sandbox
+          # Restore live snapshot over clean git tree (resilient recursive cleanup)
+          rm -rf -- "telegram_forwarder/hosting/storage" "telegram_forwarder/hosting/sandbox" 2>/dev/null || { sleep 2; rm -rf -- "telegram_forwarder/hosting/storage" "telegram_forwarder/hosting/sandbox" 2>/dev/null || true; }
           cp -a /tmp/live_state/storage telegram_forwarder/hosting/storage || { echo "::error::Restore snapshot storage failed!"; exit 1; }
           cp -a /tmp/live_state/sandbox telegram_forwarder/hosting/sandbox || { echo "::error::Restore snapshot sandbox failed!"; exit 1; }
 
